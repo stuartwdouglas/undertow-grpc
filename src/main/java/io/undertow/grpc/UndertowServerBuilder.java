@@ -24,38 +24,21 @@ import io.grpc.Metadata;
 import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
 import io.grpc.internal.AbstractServerImplBuilder;
-import io.grpc.internal.AbstractServerStream;
-import io.grpc.internal.GrpcUtil;
 import io.grpc.internal.InternalServer;
 import io.grpc.internal.LogId;
 import io.grpc.internal.ServerListener;
 import io.grpc.internal.ServerTransport;
 import io.grpc.internal.ServerTransportListener;
-import io.grpc.internal.StatsTraceContext;
-import io.grpc.internal.WritableBuffer;
-import io.grpc.internal.WritableBufferAllocator;
-import io.undertow.connector.PooledByteBuffer;
-import io.undertow.io.IoCallback;
-import io.undertow.io.Sender;
+import io.undertow.server.HandlerWrapper;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
-import io.undertow.server.protocol.http.HttpAttachments;
 import io.undertow.util.AttachmentKey;
-import io.undertow.util.HeaderMap;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
-import io.undertow.util.HttpString;
-import org.xnio.ChannelListener;
-import org.xnio.IoUtils;
-import org.xnio.channels.StreamSourceChannel;
+import io.undertow.util.Protocols;
 
-import javax.annotation.Nullable;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -65,31 +48,7 @@ public class UndertowServerBuilder extends AbstractServerImplBuilder<UndertowSer
 
     private volatile ServerTransportListener serverListener;
 
-    private static final AttachmentKey<Attributes> ATTRIBUTES_ATTACHMENT_KEY = AttachmentKey.create(Attributes.class);
-
-    private final HttpHandler handler = new HttpHandler() {
-        public void handleRequest(final HttpServerExchange exchange) throws Exception {
-
-            exchange.dispatch(exchange.getIoThread(), new Runnable() {
-                public void run() {
-
-                    final Attributes existing = exchange.getConnection().getAttachment(ATTRIBUTES_ATTACHMENT_KEY);
-                    if (existing == null) {
-                        Attributes attributes = serverListener.transportReady(Attributes.EMPTY);
-                        exchange.getConnection().putAttachment(ATTRIBUTES_ATTACHMENT_KEY, attributes);
-                    }
-                    Metadata headers = new Metadata();
-                    for (HeaderValues header : exchange.getRequestHeaders()) {
-                        headers.put(Metadata.Key.of(header.getHeaderName().toString(), Metadata.ASCII_STRING_MARSHALLER), header.getFirst());
-                    }
-                    serverListener.streamCreated(new UndertowServerStream(exchange), exchange.getRequestPath().substring(1), headers);
-
-                }
-            });
-
-        }
-    };
-
+    static final AttachmentKey<Attributes> ATTRIBUTES_ATTACHMENT_KEY = AttachmentKey.create(Attributes.class);
 
     protected InternalServer buildTransportServer(List<ServerStreamTracer.Factory> streamTracerFactories) {
         return new InternalServer() {
@@ -124,217 +83,51 @@ public class UndertowServerBuilder extends AbstractServerImplBuilder<UndertowSer
         return this;
     }
 
-    static class UndertowServerStream extends AbstractServerStream {
-        private final HttpServerExchange exchange;
+    public HandlerWrapper getHandlerWrapper() {
+        return new UndertowGRPCHandlerWrapper();
+    }
 
-        private List<PooledByteBuffer> queuedData;
-        private boolean ready = true;
+    private class UndertowGRPCHandler implements HttpHandler {
 
-        private final Sender sender;
+        private final HttpHandler next;
 
-        private boolean closed;
+        private UndertowGRPCHandler(HttpHandler next) {
+            this.next = next;
+        }
 
-        private int requestedMessageCount = 0;
-        private final StreamSourceChannel requestChannel;
+        public void handleRequest(final HttpServerExchange exchange) throws Exception {
 
-        private final TransportState transportState = new TransportState(Integer.MAX_VALUE, statsTraceContext()) {
-
-
-            @Override
-            protected void deframeFailed(Throwable cause) {
-                //TODO: proper handling
-                IoUtils.safeClose(exchange.getConnection());
+            String contentType = exchange.getRequestHeaders().getFirst(Headers.CONTENT_TYPE);
+            if(!exchange.getProtocol().equals(Protocols.HTTP_2_0) || contentType == null || !contentType.startsWith("application/grpc")) {
+                next.handleRequest(exchange);
+                return;
             }
 
-            public void bytesRead(int numBytes) {
+            exchange.dispatch(exchange.getIoThread(), new Runnable() {
+                public void run() {
 
-            }
-
-            @Override
-            public void messageRead(InputStream is) {
-                super.messageRead(is);
-                requestedMessageCount--;
-                if (requestedMessageCount == 0) {
-                    requestChannel.suspendReads();
-                }
-            }
-
-
-        };
-
-        private final Sink sink = new Sink() {
-            public void writeHeaders(Metadata headers) {
-                exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, GrpcUtil.CONTENT_TYPE_GRPC);
-                for (String key : headers.keys()) {
-                    //TODO: is there a better way to do this? Seems like a super slow way to do iteration
-                    Iterable<String> all = headers.getAll(Metadata.Key.of(key, Metadata.ASCII_STRING_MARSHALLER));
-                    if (all != null) {
-                        for (String val : all) {
-                            exchange.getResponseHeaders().add(new HttpString(key), val);
-                        }
+                    final Attributes existing = exchange.getConnection().getAttachment(ATTRIBUTES_ATTACHMENT_KEY);
+                    if (existing == null) {
+                        Attributes attributes = serverListener.transportReady(Attributes.EMPTY);
+                        exchange.getConnection().putAttachment(ATTRIBUTES_ATTACHMENT_KEY, attributes);
                     }
-                }
-            }
-
-            public void writeFrame(@Nullable final WritableBuffer frame, boolean flush) {
-                if (frame == null) {
-                    if (flush) {
-                        doSend();
+                    Metadata headers = new Metadata();
+                    for (HeaderValues header : exchange.getRequestHeaders()) {
+                        headers.put(Metadata.Key.of(header.getHeaderName().toString(), Metadata.ASCII_STRING_MARSHALLER), header.getFirst());
                     }
-                    return;
-                }
-                UndertowBuffer buf = (UndertowBuffer) frame;
-                if (queuedData == null) {
-                    queuedData = new ArrayList<PooledByteBuffer>();
-                }
-                PooledByteBuffer buffer = buf.getBuffer();
-                buffer.getBuffer().flip();
-                queuedData.add(buffer);
-                doSend();
-            }
-
-            private void doSend() {
-                if (ready) {
-                    final List<PooledByteBuffer> buffers;
-                    final ByteBuffer[] data;
-                    if (queuedData != null) {
-                        buffers = queuedData;
-                        queuedData = null;
-                        data = new ByteBuffer[buffers.size()];
-                        for (int i = 0; i < data.length; ++i) {
-                            data[i] = buffers.get(i).getBuffer();
-                        }
-                    } else {
-                        buffers = Collections.emptyList();
-                        data = new ByteBuffer[0];
-                    }
-                    ready = false;
-                    sender.send(data, new IoCallback() {
-                        public void onComplete(HttpServerExchange exchange, Sender sender) {
-                            for (PooledByteBuffer i : buffers) {
-                                i.close();
-                            }
-                            ready = true;
-                            if (closed) {
-                                sender.close();
-
-                                if (queuedData != null) {
-                                    for (PooledByteBuffer i : queuedData) {
-                                        i.close();
-                                    }
-                                    queuedData = null;
-                                }
-                            } else if (queuedData != null) {
-                                doSend();
-                            }
-                        }
-
-                        public void onException(HttpServerExchange exchange, Sender sender, IOException exception) {
-                            for (PooledByteBuffer i : buffers) {
-                                i.close();
-                            }
-                            if (queuedData != null) {
-                                for (PooledByteBuffer i : queuedData) {
-                                    i.close();
-                                }
-                                queuedData = null;
-                            }
-
-                            //TODO: not sure what to do here, the connection is pretty much hosed
-                        }
-                    });
-                }
-
-            }
-
-
-            public void writeTrailers(Metadata trailers, boolean headersSent) {
-                HeaderMap map;
-                if (exchange.isResponseStarted()) {
-                    map = new HeaderMap();
-                    exchange.putAttachment(HttpAttachments.RESPONSE_TRAILERS, map);
-                } else {
-                    map = exchange.getResponseHeaders();
-                }
-                if (trailers != null) {
-                    for (String key : trailers.keys()) {
-                        Iterable<String> all = trailers.getAll(Metadata.Key.of(key, Metadata.ASCII_STRING_MARSHALLER));
-                        if (all != null) {
-                            for (String val : all) {
-                                map.add(new HttpString(key), val);
-                            }
-                        }
-                    }
-                }
-                closed = true;
-                if (ready) {
-                    sender.close();
-                }
-            }
-
-            public void request(int numMessages) {
-                requestedMessageCount += numMessages;
-                requestChannel.resumeReads();
-                transportState.requestMessagesFromDeframer(numMessages);
-            }
-
-            public void cancel(Status status) {
-                IoUtils.safeClose(exchange.getConnection());
-            }
-        };
-
-        UndertowServerStream(final HttpServerExchange exchange) {
-            super(new WritableBufferAllocator() {
-                public WritableBuffer allocate(int capacityHint) {
-                    return new UndertowBuffer(exchange.getConnection().getByteBufferPool().allocate());
-                }
-            }, StatsTraceContext.NOOP);
-            this.exchange = exchange;
-            this.sender = exchange.getResponseSender();
-            requestChannel = exchange.getRequestChannel();
-            requestChannel.getReadSetter().set(new ChannelListener<StreamSourceChannel>() {
-                public void handleEvent(StreamSourceChannel channel) {
-                    PooledByteBuffer pooled = exchange.getConnection().getByteBufferPool().allocate();
-                    try {
-                        int res = channel.read(pooled.getBuffer());
-                        if(res == -1) {
-                            pooled.getBuffer().flip();
-                            transportState.inboundDataReceived(new UndertowReadableBuffer(pooled), true);
-                        } else if(res == 0) {
-                            pooled.close();
-                        } else {
-                            pooled.getBuffer().flip();
-                            transportState.inboundDataReceived(new UndertowReadableBuffer(pooled), false);
-                        }
-                    } catch (Exception e) {
-                        pooled.close();
-                        //TODO: error handling
-                        transportState.inboundDataReceived(null, true);
-                    }
+                    serverListener.streamCreated(new UndertowServerStream(exchange), exchange.getRequestPath().substring(1), headers);
 
                 }
             });
-        }
 
-        public Attributes getAttributes() {
-            return exchange.getConnection().getAttachment(ATTRIBUTES_ATTACHMENT_KEY);
-        }
-
-        @Nullable
-        public String getAuthority() {
-            return exchange.getHostName();
-        }
-
-        protected TransportState transportState() {
-            return transportState;
-        }
-
-        protected Sink abstractServerStreamSink() {
-            return sink;
         }
     }
 
-    public HttpHandler getHandler() {
-        return handler;
+
+    private class UndertowGRPCHandlerWrapper implements HandlerWrapper {
+
+        public HttpHandler wrap(HttpHandler handler) {
+            return new UndertowGRPCHandler(handler);
+        }
     }
 }

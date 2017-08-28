@@ -24,6 +24,7 @@ import io.grpc.stub.StreamObserver;
 import io.undertow.Undertow;
 import io.undertow.UndertowOptions;
 import io.undertow.grpc.UndertowServerBuilder;
+import io.undertow.server.handlers.ResponseCodeHandler;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -49,7 +50,7 @@ public class UndertowGRPCTestCase {
                 .addListener(new Undertow.ListenerBuilder()
                         .setType(Undertow.ListenerType.HTTP)
                         .setPort(PORT))
-                .setHandler(builder.getHandler())
+                .setHandler(builder.getHandlerWrapper().wrap(ResponseCodeHandler.HANDLE_404))
                 .build();
         undertow.start();
 

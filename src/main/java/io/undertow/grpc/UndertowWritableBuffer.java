@@ -25,11 +25,11 @@ import io.undertow.connector.PooledByteBuffer;
 /**
  * @author Stuart Douglas
  */
-public class UndertowBuffer implements WritableBuffer {
+class UndertowWritableBuffer implements WritableBuffer {
 
     private final PooledByteBuffer buffer;
 
-    public UndertowBuffer(PooledByteBuffer buffer) {
+    public UndertowWritableBuffer(PooledByteBuffer buffer) {
         this.buffer = buffer;
     }
 
@@ -53,7 +53,7 @@ public class UndertowBuffer implements WritableBuffer {
         buffer.close();
     }
 
-    public PooledByteBuffer getBuffer() {
+    PooledByteBuffer getBuffer() {
         return buffer;
     }
 }
