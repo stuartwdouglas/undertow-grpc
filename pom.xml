@@ -8,13 +8,20 @@
     <artifactId>undertow-grpc</artifactId>
     <version>1.0-SNAPSHOT</version>
 
+    <parent>
+        <groupId>org.jboss</groupId>
+        <artifactId>jboss-parent</artifactId>
+        <version>24</version>
+    </parent>
+
     <properties>
         <grpc.version>1.5.0</grpc.version>
         <os-maven-plugin.version>1.5.0.Final</os-maven-plugin.version>
-        <undertow.version>1.4.20.Final-SNAPSHOT</undertow.version>
+        <undertow.version>2.0.0.Alpha2-SNAPSHOT</undertow.version>
         <junit.version>4.12</junit.version>
-    </properties>
+        <xnio..version>3.5.0.Final</xnio..version>
 
+    </properties>
 
     <dependencies>
         <dependency>
@@ -30,14 +37,28 @@
         </dependency>
 
         <dependency>
+            <groupId>org.jboss.xnio</groupId>
+            <artifactId>xnio-api</artifactId>
+            <version>${xnio..version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jboss.xnio</groupId>
+            <artifactId>xnio-nio</artifactId>
+            <version>${xnio..version}</version>
+        </dependency>
+
+        <dependency>
             <groupId>junit</groupId>
             <artifactId>junit</artifactId>
             <version>${junit.version}</version>
             <scope>test</scope>
         </dependency>
+
     </dependencies>
 
     <build>
+
         <extensions>
             <extension>
                 <groupId>kr.motd.maven</groupId>

@@ -23,19 +23,14 @@ import io.grpc.Attributes;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.internal.AbstractServerStream;
-import io.grpc.internal.GrpcUtil;
 import io.grpc.internal.StatsTraceContext;
 import io.grpc.internal.WritableBuffer;
-import io.grpc.internal.WritableBufferAllocator;
 import io.undertow.connector.PooledByteBuffer;
 import io.undertow.io.IoCallback;
 import io.undertow.io.Sender;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.protocol.http.HttpAttachments;
 import io.undertow.util.HeaderMap;
-import io.undertow.util.Headers;
-import io.undertow.util.HttpString;
-import org.xnio.ChannelListener;
 import org.xnio.IoUtils;
 import org.xnio.channels.StreamSourceChannel;
 
@@ -90,16 +85,7 @@ class UndertowServerStream extends AbstractServerStream {
 
     private final Sink sink = new Sink() {
         public void writeHeaders(Metadata headers) {
-            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, GrpcUtil.CONTENT_TYPE_GRPC);
-            for (String key : headers.keys()) {
-                //TODO: is there a better way to do this? Seems like a super slow way to do iteration
-                Iterable<String> all = headers.getAll(Metadata.Key.of(key, Metadata.ASCII_STRING_MARSHALLER));
-                if (all != null) {
-                    for (String val : all) {
-                        exchange.getResponseHeaders().add(new HttpString(key), val);
-                    }
-                }
-            }
+            UndertowGrpcUtil.metadataToHeaderMap(exchange.getResponseHeaders(), headers);
         }
 
         public void writeFrame(@Nullable final WritableBuffer frame, boolean flush) {
@@ -111,7 +97,7 @@ class UndertowServerStream extends AbstractServerStream {
             }
             UndertowWritableBuffer buf = (UndertowWritableBuffer) frame;
             if (queuedData == null) {
-                queuedData = new ArrayList<PooledByteBuffer>();
+                queuedData = new ArrayList<>();
             }
             PooledByteBuffer buffer = buf.getBuffer();
             buffer.getBuffer().flip();
@@ -175,22 +161,10 @@ class UndertowServerStream extends AbstractServerStream {
 
 
         public void writeTrailers(Metadata trailers, boolean headersSent) {
-            HeaderMap map;
-            if (exchange.isResponseStarted()) {
-                map = new HeaderMap();
-                exchange.putAttachment(HttpAttachments.RESPONSE_TRAILERS, map);
-            } else {
-                map = exchange.getResponseHeaders();
-            }
             if (trailers != null) {
-                for (String key : trailers.keys()) {
-                    Iterable<String> all = trailers.getAll(Metadata.Key.of(key, Metadata.ASCII_STRING_MARSHALLER));
-                    if (all != null) {
-                        for (String val : all) {
-                            map.add(new HttpString(key), val);
-                        }
-                    }
-                }
+                HeaderMap map = new HeaderMap();
+                exchange.putAttachment(HttpAttachments.RESPONSE_TRAILERS, map);
+                UndertowGrpcUtil.metadataToHeaderMap(map, trailers);
             }
             closed = true;
             if (ready) {
@@ -210,36 +184,11 @@ class UndertowServerStream extends AbstractServerStream {
     };
 
     UndertowServerStream(final HttpServerExchange exchange) {
-        super(new WritableBufferAllocator() {
-            public WritableBuffer allocate(int capacityHint) {
-                return new UndertowWritableBuffer(exchange.getConnection().getByteBufferPool().allocate());
-            }
-        }, StatsTraceContext.NOOP);
+        super(capacityHint -> new UndertowWritableBuffer(exchange.getConnection().getByteBufferPool().allocate()), StatsTraceContext.NOOP);
         this.exchange = exchange;
         this.sender = exchange.getResponseSender();
         requestChannel = exchange.getRequestChannel();
-        requestChannel.getReadSetter().set(new ChannelListener<StreamSourceChannel>() {
-            public void handleEvent(StreamSourceChannel channel) {
-                PooledByteBuffer pooled = exchange.getConnection().getByteBufferPool().allocate();
-                try {
-                    int res = channel.read(pooled.getBuffer());
-                    if (res == -1) {
-                        pooled.getBuffer().flip();
-                        transportState.inboundDataReceived(new UndertowReadableBuffer(pooled), true);
-                    } else if (res == 0) {
-                        pooled.close();
-                    } else {
-                        pooled.getBuffer().flip();
-                        transportState.inboundDataReceived(new UndertowReadableBuffer(pooled), false);
-                    }
-                } catch (Exception e) {
-                    pooled.close();
-                    //TODO: error handling
-                    transportState.inboundDataReceived(null, true);
-                }
-
-            }
-        });
+        requestChannel.getReadSetter().set(new ReadChannelListener(exchange.getConnection().getByteBufferPool(), (transportState::inboundDataReceived), (e) -> transportState.transportReportStatus(Status.fromThrowable(e))));
     }
 
     public Attributes getAttributes() {
@@ -258,4 +207,5 @@ class UndertowServerStream extends AbstractServerStream {
     protected Sink abstractServerStreamSink() {
         return sink;
     }
+
 }

@@ -31,7 +31,7 @@ import java.nio.ByteBuffer;
 /**
  * @author Stuart Douglas
  */
-public class UndertowReadableBuffer extends AbstractReadableBuffer {
+class UndertowReadableBuffer extends AbstractReadableBuffer {
 
     private final PooledByteBuffer buffer;
 

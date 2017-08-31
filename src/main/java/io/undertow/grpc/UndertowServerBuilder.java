@@ -24,6 +24,7 @@ import io.grpc.Metadata;
 import io.grpc.ServerStreamTracer;
 import io.grpc.Status;
 import io.grpc.internal.AbstractServerImplBuilder;
+import io.grpc.internal.GrpcUtil;
 import io.grpc.internal.InternalServer;
 import io.grpc.internal.LogId;
 import io.grpc.internal.ServerListener;
@@ -54,6 +55,9 @@ public class UndertowServerBuilder extends AbstractServerImplBuilder<UndertowSer
         return new InternalServer() {
             public void start(ServerListener listener) throws IOException {
                 serverListener = listener.transportCreated(new ServerTransport() {
+
+                    private final LogId logId = LogId.allocate(getClass().getName());
+
                     public void shutdown() {
                         //ignore
                     }
@@ -63,7 +67,7 @@ public class UndertowServerBuilder extends AbstractServerImplBuilder<UndertowSer
                     }
 
                     public LogId getLogId() {
-                        return LogId.allocate(UndertowServerBuilder.class.getName());
+                        return logId;
                     }
                 });
             }
@@ -98,26 +102,25 @@ public class UndertowServerBuilder extends AbstractServerImplBuilder<UndertowSer
         public void handleRequest(final HttpServerExchange exchange) throws Exception {
 
             String contentType = exchange.getRequestHeaders().getFirst(Headers.CONTENT_TYPE);
-            if(!exchange.getProtocol().equals(Protocols.HTTP_2_0) || contentType == null || !contentType.startsWith("application/grpc")) {
+            if(!exchange.getProtocol().equals(Protocols.HTTP_2_0) || contentType == null || !contentType.startsWith(UndertowGrpcUtil.APPLICATION_GRPC)) {
                 next.handleRequest(exchange);
                 return;
             }
+            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, GrpcUtil.CONTENT_TYPE_GRPC);
 
-            exchange.dispatch(exchange.getIoThread(), new Runnable() {
-                public void run() {
+            exchange.dispatch(exchange.getIoThread(), () -> {
 
-                    final Attributes existing = exchange.getConnection().getAttachment(ATTRIBUTES_ATTACHMENT_KEY);
-                    if (existing == null) {
-                        Attributes attributes = serverListener.transportReady(Attributes.EMPTY);
-                        exchange.getConnection().putAttachment(ATTRIBUTES_ATTACHMENT_KEY, attributes);
-                    }
-                    Metadata headers = new Metadata();
-                    for (HeaderValues header : exchange.getRequestHeaders()) {
-                        headers.put(Metadata.Key.of(header.getHeaderName().toString(), Metadata.ASCII_STRING_MARSHALLER), header.getFirst());
-                    }
-                    serverListener.streamCreated(new UndertowServerStream(exchange), exchange.getRequestPath().substring(1), headers);
-
+                final Attributes existing = exchange.getConnection().getAttachment(ATTRIBUTES_ATTACHMENT_KEY);
+                if (existing == null) {
+                    Attributes attributes = serverListener.transportReady(Attributes.EMPTY);
+                    exchange.getConnection().putAttachment(ATTRIBUTES_ATTACHMENT_KEY, attributes);
                 }
+                Metadata headers = new Metadata();
+                for (HeaderValues header : exchange.getRequestHeaders()) {
+                    headers.put(Metadata.Key.of(header.getHeaderName().toString(), Metadata.ASCII_STRING_MARSHALLER), header.getFirst());
+                }
+                serverListener.streamCreated(new UndertowServerStream(exchange), exchange.getRequestPath().substring(1), headers);
+
             });
 
         }
