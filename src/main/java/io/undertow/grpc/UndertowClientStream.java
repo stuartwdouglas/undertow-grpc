@@ -117,11 +117,17 @@ class UndertowClientStream extends AbstractClientStream {
                             responseChannel = clientExchange.getResponseChannel();
                             responseChannel.getReadSetter().set(new ReadChannelListener(clientConnection.getBufferPool(), ((b, endOfStream) -> {
                                 if (endOfStream) {
+                                    if(b.readableBytes() > 0) {
+                                        transportState.transportDataReceived(b, false);
+                                    } else {
+                                        b.close();
+                                    }
                                     responseDone();
                                     HeaderMap trailers = result.getAttachment(HttpAttachments.REQUEST_TRAILERS);
                                     transportState.transportTrailersReceived(headerMapToMetadata(trailers));
+                                } else {
+                                    transportState.transportDataReceived(b, endOfStream);
                                 }
-                                transportState.transportDataReceived(b, endOfStream);
                             }), (e) -> {
                                 requestDone();
                                 responseDone();
@@ -156,11 +162,13 @@ class UndertowClientStream extends AbstractClientStream {
         }
 
         public void request(int numMessages) {
-            requestedMessages += numMessages;
-            transportState.requestMessagesFromDeframer(numMessages);
-            if (responseChannel != null) {
-                responseChannel.resumeReads();
-            }
+            clientConnection.getIoThread().execute(() -> {
+                requestedMessages += numMessages;
+                transportState.requestMessagesFromDeframer(numMessages);
+                if (responseChannel != null) {
+                    responseChannel.resumeReads();
+                }
+            });
         }
 
         public void cancel(Status status) {
@@ -205,6 +213,7 @@ class UndertowClientStream extends AbstractClientStream {
         if(requestDone) {
             return;
         }
+        endOfMessages();
         requestDone = true;
         if(responseDone) {
             undertowClientTransport.streamDestroyed();
@@ -293,10 +302,10 @@ class UndertowClientStream extends AbstractClientStream {
                                 return;
                             }
                             if (!buffer.hasRemaining()) {
-                                dataQueue.poll();
+                                dataQueue.poll().frame.getBuffer().close();
                             }
                         } else {
-                            dataQueue.poll(); //remove this one from the queue
+                            dataQueue.poll().frame.getBuffer().close(); //remove this one from the queue
                         }
                     }
                     if (data.endOfStream) {

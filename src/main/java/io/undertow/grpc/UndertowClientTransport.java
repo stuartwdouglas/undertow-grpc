@@ -159,7 +159,7 @@ class UndertowClientTransport implements ConnectionClientTransport {
     @Override
     public Runnable start(Listener listener) {
         this.listener = Preconditions.checkNotNull(listener, "listener");
-        this.bufferPool = new DefaultByteBufferPool(true, 2048);//TODO: configurable
+        this.bufferPool = new DefaultByteBufferPool(true, 2048, -1, 2, 0);//TODO: configurable
         if (enableKeepAlive) {
             //TODO: this should just use the IO thread
             scheduler = SharedResourceHolder.get(TIMER_SERVICE);

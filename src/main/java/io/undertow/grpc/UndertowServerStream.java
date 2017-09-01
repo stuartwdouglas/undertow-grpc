@@ -173,9 +173,11 @@ class UndertowServerStream extends AbstractServerStream {
         }
 
         public void request(int numMessages) {
-            requestedMessageCount += numMessages;
-            requestChannel.resumeReads();
-            transportState.requestMessagesFromDeframer(numMessages);
+            exchange.getIoThread().execute(() -> {
+                requestedMessageCount += numMessages;
+                requestChannel.resumeReads();
+                transportState.requestMessagesFromDeframer(numMessages);
+            });
         }
 
         public void cancel(Status status) {
