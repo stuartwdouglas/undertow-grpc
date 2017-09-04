@@ -19,10 +19,13 @@
 
 package io.undertow.grpc;
 
+import io.grpc.InternalMetadata;
 import io.grpc.Metadata;
 import io.undertow.util.HeaderMap;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
+
+import java.nio.charset.StandardCharsets;
 
 /**
  * @author Stuart Douglas
@@ -35,24 +38,23 @@ class UndertowGrpcUtil {
     }
 
     static void metadataToHeaderMap(HeaderMap map, Metadata metadata) {
-        for (String key : metadata.keys()) {
-            Iterable<String> all = metadata.getAll(Metadata.Key.of(key, Metadata.ASCII_STRING_MARSHALLER));
-            if (all != null) {
-                for (String val : all) {
-                    map.add(new HttpString(key), val);
-                }
-            }
+        byte[][] data = InternalMetadata.serialize(metadata);
+        for (int i = 0; i < data.length; i += 2) {
+            HttpString header = new HttpString(data[i]);
+            String value = new String(data[i + 1]);
+            map.add(header, value);
         }
     }
 
     static Metadata headerMapToMetadata(HeaderMap map) {
-        Metadata metadata = new Metadata();
+        byte[][] data = new byte[map.size() * 2][];
+        int c = 0;
         for (HeaderValues header : map) {
-            Metadata.Key<String> key = Metadata.Key.of(header.getHeaderName().toString(), Metadata.ASCII_STRING_MARSHALLER);
-            for (String val : header) {
-                metadata.put(key, val);
-            }
+            data[c] = new byte[header.getHeaderName().length()];
+            header.getHeaderName().copyTo(data[c], 0);
+            data[c + 1] = header.getFirst().getBytes(StandardCharsets.US_ASCII);
+            c += 2;
         }
-        return metadata;
+        return InternalMetadata.newMetadata(data);
     }
 }
