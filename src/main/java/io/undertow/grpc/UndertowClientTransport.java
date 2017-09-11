@@ -181,7 +181,7 @@ class UndertowClientTransport implements ConnectionClientTransport {
                 public void failed(IOException e) {
                     listener.transportShutdown(Status.fromThrowable(e));
                 }
-            }, new URI(sslContext == null ? "http" : "https", null, address.getHostString(), address.getPort(), "/", null, null), executor, bufferPool, OptionMap.create(UndertowOptions.ENABLE_HTTP2, true));
+            }, new URI(sslContext == null ? "h2c-prior" : "https", null, address.getHostString(), address.getPort(), "/", null, null), executor, bufferPool, OptionMap.create(UndertowOptions.ENABLE_HTTP2, true));
         } catch (URISyntaxException e) {
             throw new RuntimeException(e);
         }
